@@ -1,0 +1,32 @@
+{
+    "name": "flownix-frontend",
+    "private": true,
+    "version": "0.0.0",
+    "main": "dist-electron/main.js",
+    "scripts": {
+        "dev": "vite",
+        "build": "tsc && vite build && electron-builder",
+        "preview": "vite preview",
+        "electron:dev": "npm run electron:compile && concurrently -k \"cross-env BROWSER=none npm run dev\" \"npm run electron:wait\"",
+        "electron:compile": "tsc -p electron/tsconfig.json",
+        "electron:wait": "wait-on tcp:5173 && cross-env NODE_ENV=development electron .",
+        "electron:build": "vite build && tsc -p electron/tsconfig.json && electron-builder"
+    },
+    "dependencies": {
+        "react": "^18.2.0",
+        "react-dom": "^18.2.0"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.66",
+        "@types/react-dom": "^18.2.22",
+        "@vitejs/plugin-react": "^4.2.1",
+        "concurrently": "^8.2.2",
+        "cross-env": "^7.0.3",
+        "electron": "^39.2.7",
+        "electron-builder": "^24.13.3",
+        "electron-squirrel-startup": "^1.0.0",
+        "typescript": "^5.2.2",
+        "vite": "^7.3.0",
+        "wait-on": "^7.2.0"
+    }
+}

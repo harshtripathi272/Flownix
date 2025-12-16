@@ -1,8 +1,20 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from typing import Dict, Any
+import pandas as pd
+import os
+import uuid
+from pathlib import Path
+import aiofiles
+
+from app.core.config import settings
 
 api_router = APIRouter()
 
+# Ensure temp directory exists
+os.makedirs(settings.TEMP_DIR, exist_ok=True)
+
+# Supported file types
+SUPPORTED_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.json', '.parquet'}
 
 @api_router.get("/")
 async def api_root():
@@ -11,18 +23,135 @@ async def api_root():
 
 @api_router.post("/dataset/upload")
 async def upload_dataset(file: UploadFile = File(...)):
-    """Upload a dataset for analysis"""
-    if not file.filename.endswith(('.csv', '.xlsx', '.xls')):
+    """Upload a dataset file for analysis (CSV, Excel, JSON, Parquet)"""
+    
+    # Validate file type
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    
+    file_ext = Path(file.filename).suffix.lower()
+    
+    if file_ext not in SUPPORTED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
-            detail="Only CSV and Excel files are supported"
+            detail=f"Unsupported file type. Supported formats: {', '.join(SUPPORTED_EXTENSIONS)}"
         )
     
-    return {
-        "status": "success",
-        "filename": file.filename,
-        "message": "Dataset uploaded successfully"
-    }
+    # Validate file size
+    file_content = await file.read()
+    file_size = len(file_content)
+    
+    if file_size > settings.MAX_UPLOAD_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {settings.MAX_UPLOAD_SIZE / (1024*1024):.0f}MB"
+        )
+    
+    if file_size == 0:
+        raise HTTPException(status_code=400, detail="Empty file uploaded")
+    
+    # Generate unique dataset ID
+    dataset_id = str(uuid.uuid4())
+    file_path = os.path.join(settings.TEMP_DIR, f"{dataset_id}{file_ext}")
+    
+    try:
+        # Save file temporarily
+        async with aiofiles.open(file_path, 'wb') as f:
+            await f.write(file_content)
+        
+        # Read with pandas based on file type and validate
+        try:
+            df = None
+            
+            if file_ext == '.csv':
+                df = pd.read_csv(file_path)
+            elif file_ext in ['.xlsx', '.xls']:
+                df = pd.read_excel(file_path)
+            elif file_ext == '.json':
+                df = pd.read_json(file_path)
+            elif file_ext == '.parquet':
+                df = pd.read_parquet(file_path)
+            
+            # Basic validation
+            if df is None:
+                raise HTTPException(status_code=400, detail="Failed to read file")
+            
+            if df.empty:
+                raise HTTPException(status_code=400, detail="File contains no data")
+            
+            if len(df.columns) == 0:
+                raise HTTPException(status_code=400, detail="File has no columns")
+            
+            # Get dataset info
+            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+            datetime_cols = df.select_dtypes(include=['datetime']).columns.tolist()
+            
+            dataset_info = {
+                "dataset_id": dataset_id,
+                "filename": file.filename,
+                "file_type": file_ext.replace('.', '').upper(),
+                "file_size": file_size,
+                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                "rows": len(df),
+                "columns": len(df.columns),
+                "column_names": df.columns.tolist(),
+                "dtypes": df.dtypes.astype(str).to_dict(),
+                "numeric_columns": numeric_cols,
+                "categorical_columns": categorical_cols,
+                "datetime_columns": datetime_cols,
+                "missing_values": df.isnull().sum().to_dict(),
+                "total_missing": int(df.isnull().sum().sum()),
+                "duplicate_rows": int(df.duplicated().sum()),
+                "memory_usage_mb": round(df.memory_usage(deep=True).sum() / (1024 * 1024), 2),
+                "file_path": file_path,
+                "preview": df.head(5).to_dict('records')  # First 5 rows preview
+            }
+            
+            return {
+                "status": "success",
+                "message": "Dataset uploaded and validated successfully",
+                "data": dataset_info
+            }
+            
+        except pd.errors.EmptyDataError:
+            # Clean up the file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(status_code=400, detail="File is empty or invalid")
+        
+        except pd.errors.ParserError as e:
+            # Clean up the file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to parse file: {str(e)}"
+            )
+        
+        except ValueError as e:
+            # Clean up the file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid file format: {str(e)}"
+            )
+        
+        except Exception as e:
+            # Clean up the file
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error processing file: {str(e)}"
+            )
+    
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error saving file: {str(e)}"
+        )
 
 
 @api_router.post("/dataset/analyze")

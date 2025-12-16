@@ -13,6 +13,10 @@ api_router = APIRouter()
 # Ensure temp directory exists
 os.makedirs(settings.TEMP_DIR, exist_ok=True)
 
+# In-memory storage for dataset metadata
+# In production, this should be replaced with a database
+datasets_metadata: Dict[str, Dict[str, Any]] = {}
+
 # Supported file types
 SUPPORTED_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.json', '.parquet'}
 
@@ -107,6 +111,9 @@ async def upload_dataset(file: UploadFile = File(...)):
                 "file_path": file_path,
                 "preview": df.head(5).to_dict('records')  # First 5 rows preview
             }
+            
+            # Store metadata for later retrieval
+            datasets_metadata[dataset_id] = dataset_info
             
             return {
                 "status": "success",

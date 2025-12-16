@@ -16,9 +16,6 @@ os.makedirs(settings.TEMP_DIR, exist_ok=True)
 # Supported file types
 SUPPORTED_EXTENSIONS = {'.csv', '.xlsx', '.xls', '.json', '.parquet'}
 
-# Store dataset metadata in memory (in production, use a database)
-datasets_metadata = {}
-
 @api_router.get("/")
 async def api_root():
     return {"message": "Flownix API v1"}
@@ -26,7 +23,7 @@ async def api_root():
 
 @api_router.post("/dataset/upload")
 async def upload_dataset(file: UploadFile = File(...)):
-    """Upload a dataset file (CSV, Excel, JSON, Parquet)"""
+    """Upload a dataset file for analysis (CSV, Excel, JSON, Parquet)"""
     
     # Validate file type
     if not file.filename:
@@ -62,7 +59,7 @@ async def upload_dataset(file: UploadFile = File(...)):
         async with aiofiles.open(file_path, 'wb') as f:
             await f.write(file_content)
         
-        # Basic validation - just check if file can be read
+        # Read with pandas based on file type and validate
         try:
             df = None
             
@@ -85,34 +82,46 @@ async def upload_dataset(file: UploadFile = File(...)):
             if len(df.columns) == 0:
                 raise HTTPException(status_code=400, detail="File has no columns")
             
-            # Store basic metadata
-            datasets_metadata[dataset_id] = {
+            # Get dataset info
+            numeric_cols = df.select_dtypes(include=['number']).columns.tolist()
+            categorical_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+            datetime_cols = df.select_dtypes(include=['datetime']).columns.tolist()
+            
+            dataset_info = {
+                "dataset_id": dataset_id,
                 "filename": file.filename,
-                "file_path": file_path,
                 "file_type": file_ext.replace('.', '').upper(),
-                "uploaded_at": pd.Timestamp.now().isoformat()
+                "file_size": file_size,
+                "file_size_mb": round(file_size / (1024 * 1024), 2),
+                "rows": len(df),
+                "columns": len(df.columns),
+                "column_names": df.columns.tolist(),
+                "dtypes": df.dtypes.astype(str).to_dict(),
+                "numeric_columns": numeric_cols,
+                "categorical_columns": categorical_cols,
+                "datetime_columns": datetime_cols,
+                "missing_values": df.isnull().sum().to_dict(),
+                "total_missing": int(df.isnull().sum().sum()),
+                "duplicate_rows": int(df.duplicated().sum()),
+                "memory_usage_mb": round(df.memory_usage(deep=True).sum() / (1024 * 1024), 2),
+                "file_path": file_path,
+                "preview": df.head(5).to_dict('records')  # First 5 rows preview
             }
             
             return {
                 "status": "success",
-                "message": "Dataset uploaded successfully",
-                "data": {
-                    "dataset_id": dataset_id,
-                    "filename": file.filename,
-                    "file_type": file_ext.replace('.', '').upper(),
-                    "file_size": file_size,
-                    "file_size_mb": round(file_size / (1024 * 1024), 2),
-                    "rows": len(df),
-                    "columns": len(df.columns)
-                }
+                "message": "Dataset uploaded and validated successfully",
+                "data": dataset_info
             }
             
         except pd.errors.EmptyDataError:
+            # Clean up the file
             if os.path.exists(file_path):
                 os.remove(file_path)
             raise HTTPException(status_code=400, detail="File is empty or invalid")
         
         except pd.errors.ParserError as e:
+            # Clean up the file
             if os.path.exists(file_path):
                 os.remove(file_path)
             raise HTTPException(
@@ -121,6 +130,7 @@ async def upload_dataset(file: UploadFile = File(...)):
             )
         
         except ValueError as e:
+            # Clean up the file
             if os.path.exists(file_path):
                 os.remove(file_path)
             raise HTTPException(
@@ -129,6 +139,7 @@ async def upload_dataset(file: UploadFile = File(...)):
             )
         
         except Exception as e:
+            # Clean up the file
             if os.path.exists(file_path):
                 os.remove(file_path)
             raise HTTPException(
